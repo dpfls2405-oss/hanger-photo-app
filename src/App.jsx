@@ -12,37 +12,28 @@ export default function App() {
   const [memo, setMemo] = useState("");
   const [uploading, setUploading] = useState(false);
 
-  // 데이터 로드
   const loadData = useCallback(async () => {
     const { data: codes } = await supabase
       .from("recon_codes")
-      .select("id, code, part_name, series:series_id(id, series_name)")
+      .select("id, code, part_name, has_shot, series:series_id(id, series_name)")
       .order("code");
-
     const { data: photos } = await supabase
       .from("photos")
       .select("recon_code_id, photo_type, image_url, memo, uploaded_at");
-
     if (!codes) return;
-
-    // 시리즈별 그룹핑
     const grouped = {};
     codes.forEach((rc) => {
       const sName = rc.series.series_name;
       if (!grouped[sName]) grouped[sName] = { series: sName, codes: [] };
-      grouped[sName].codes.push({ id: rc.id, code: rc.code, name: rc.part_name });
+      grouped[sName].codes.push({ id: rc.id, code: rc.code, name: rc.part_name, hasShot: rc.has_shot });
     });
-
-    // 사진 맵
     const pMap = {};
     (photos || []).forEach((p) => {
       pMap[`${p.recon_code_id}__${p.photo_type}`] = {
-        url: p.image_url,
-        memo: p.memo,
+        url: p.image_url, memo: p.memo,
         date: new Date(p.uploaded_at).toLocaleDateString("ko", { month: "2-digit", day: "2-digit" }),
       };
     });
-
     setSeriesList(Object.values(grouped));
     setPhotoMap(pMap);
     setLoading(false);
@@ -53,8 +44,11 @@ export default function App() {
   const getPhotoKeys = (s) => {
     const keys = [];
     s.codes.forEach((c) => {
-      keys.push({ key: `${c.id}__hook`, rcId: c.id, code: c.code, codeName: c.name, type: "hook", label: "도장 고리", desc: "고리/지그 형상", icon: "🪝" });
-      keys.push({ key: `${c.id}__hanger`, rcId: c.id, code: c.code, codeName: c.name, type: "hanger", label: "도장 행거", desc: "제품 걸린 상태", icon: "📐" });
+      keys.push({ key: `${c.id}__hook`, rcId: c.id, code: c.code, codeName: c.name, type: "hook", label: "도장 고리", desc: "고리/지그 형상", icon: "🪝", line: "도장" });
+      keys.push({ key: `${c.id}__hanger`, rcId: c.id, code: c.code, codeName: c.name, type: "hanger", label: "도장 행거", desc: "제품 걸린 상태", icon: "📐", line: "도장" });
+      if (c.hasShot) {
+        keys.push({ key: `${c.id}__shot_hanger`, rcId: c.id, code: c.code, codeName: c.name, type: "shot_hanger", label: "쇼트 행거", desc: "쇼트 제품 걸린 상태", icon: "📐", line: "쇼트" });
+      }
     });
     return keys;
   };
@@ -65,66 +59,43 @@ export default function App() {
     return { done, total: keys.length, complete: done === keys.length, partial: done > 0 && done < keys.length };
   };
 
-  // 업로드
   const handleUpload = async (file) => {
     if (!file || !uploadTarget) return;
     setUploading(true);
-
     try {
       const ext = file.name.split(".").pop();
       const path = `${uploadTarget.code}/${uploadTarget.type}_${Date.now()}.${ext}`;
-
-      const { error: uploadErr } = await supabase.storage
-        .from("hanger-photos")
-        .upload(path, file, { upsert: true });
-
+      const { error: uploadErr } = await supabase.storage.from("hanger-photos").upload(path, file, { upsert: true });
       if (uploadErr) throw uploadErr;
-
       const imageUrl = `${STORAGE_URL}/${path}`;
-
-      // upsert photo record
       const { error: dbErr } = await supabase
         .from("photos")
-        .upsert(
-          { recon_code_id: uploadTarget.rcId, photo_type: uploadTarget.type, image_url: imageUrl, memo },
-          { onConflict: "recon_code_id,photo_type" }
-        );
-
+        .upsert({ recon_code_id: uploadTarget.rcId, photo_type: uploadTarget.type, image_url: imageUrl, memo }, { onConflict: "recon_code_id,photo_type" });
       if (dbErr) throw dbErr;
-
       await loadData();
-      setUploadTarget(null);
-      setMemo("");
-    } catch (err) {
-      alert("업로드 실패: " + err.message);
-    } finally {
-      setUploading(false);
-    }
+      setUploadTarget(null); setMemo("");
+    } catch (err) { alert("업로드 실패: " + err.message); }
+    finally { setUploading(false); }
   };
 
   const total = seriesList.length;
   const complete = seriesList.filter((s) => getStatus(s).complete).length;
   const partial = seriesList.filter((s) => getStatus(s).partial).length;
   const none = total - complete - partial;
-
   const filtered = seriesList.filter((s) =>
     s.series.toLowerCase().includes(search.toLowerCase()) ||
     s.codes.some((c) => c.code.toLowerCase().includes(search.toLowerCase()) || c.name.toLowerCase().includes(search.toLowerCase()))
   );
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-4xl mb-3">🪝</div>
-          <div className="text-gray-500">로딩 중...</div>
-        </div>
-      </div>
-    );
-  }
+  if (loading) return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="text-center"><div className="text-4xl mb-3">🪝</div><div className="text-gray-500">로딩 중...</div></div>
+    </div>
+  );
 
   // ===== 촬영 =====
   if (uploadTarget) {
+    const isShot = uploadTarget.line === "쇼트";
     return (
       <div className="min-h-screen bg-gray-50">
         <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
@@ -138,36 +109,17 @@ export default function App() {
           </div>
         </div>
         <div className="max-w-lg mx-auto px-4 py-5 space-y-4">
-          <div className="rounded-2xl p-3 text-sm font-medium bg-orange-50 text-orange-700">
+          <div className={`rounded-2xl p-3 text-sm font-medium ${isShot ? "bg-blue-50 text-blue-700" : "bg-orange-50 text-orange-700"}`}>
             📌 <strong>{uploadTarget.codeName}</strong>의 {uploadTarget.desc}을 촬영해주세요
           </div>
-
           <label className="block bg-gray-900 rounded-2xl h-60 flex items-center justify-center cursor-pointer active:bg-gray-700 transition">
-            <input
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files?.[0]) handleUpload(e.target.files[0]);
-              }}
-              disabled={uploading}
-            />
+            <input type="file" accept="image/*" capture="environment" className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) handleUpload(e.target.files[0]); }} disabled={uploading} />
             <div className="text-center text-white">
-              {uploading ? (
-                <>
-                  <div className="text-4xl mb-3 animate-pulse">⏳</div>
-                  <div className="text-lg font-medium">업로드 중...</div>
-                </>
-              ) : (
-                <>
-                  <div className="text-6xl mb-3">📸</div>
-                  <div className="text-lg font-medium">탭하여 촬영</div>
-                </>
-              )}
+              {uploading ? (<><div className="text-4xl mb-3 animate-pulse">⏳</div><div className="text-lg font-medium">업로드 중...</div></>)
+                : (<><div className="text-6xl mb-3">📸</div><div className="text-lg font-medium">탭하여 촬영</div></>)}
             </div>
           </label>
-
           <div className="bg-white rounded-2xl border border-gray-200 p-4">
             <label className="text-sm font-medium text-gray-600 block mb-1.5">메모 (선택)</label>
             <input type="text" placeholder="예: 고리 3개, 상하 배치..." value={memo} onChange={(e) => setMemo(e.target.value)}
@@ -183,6 +135,52 @@ export default function App() {
     const s = seriesList[selectedSeries];
     const keys = getPhotoKeys(s);
     const st = getStatus(s);
+    const paintKeys = keys.filter((k) => k.line === "도장");
+    const shotKeys = keys.filter((k) => k.line === "쇼트");
+
+    const renderRow = (pk, color) => {
+      const photo = photoMap[pk.key];
+      return (
+        <div key={pk.key} className="border-b border-gray-100 last:border-0">
+          <div className="px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <span className="text-lg">{pk.icon}</span>
+              <div><div className="text-sm text-gray-700">{pk.label}</div><div className="text-xs text-gray-400">{pk.desc}</div></div>
+            </div>
+            {photo ? (
+              <div className="flex items-center gap-2">
+                <span className="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full">완료</span>
+                <button onClick={() => setUploadTarget(pk)} className={`text-xs font-medium ${color === "orange" ? "text-orange-500" : "text-blue-500"}`}>재촬영</button>
+              </div>
+            ) : (
+              <button onClick={() => setUploadTarget(pk)}
+                className={`text-white text-sm font-bold px-4 py-2 rounded-xl active:opacity-80 transition ${color === "orange" ? "bg-orange-500" : "bg-blue-500"}`}>촬영</button>
+            )}
+          </div>
+          {photo && (
+            <div className="px-4 pb-3">
+              <img src={photo.url} alt={pk.label} className="w-full h-40 object-cover rounded-xl bg-gray-100" />
+              {photo.memo && <div className="text-xs text-gray-400 mt-1.5">💬 {photo.memo}</div>}
+              <div className="text-xs text-gray-300 mt-0.5">{photo.date}</div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const renderCodeBlock = (c, lineKeys, color) => {
+      const codeKeys = lineKeys.filter((k) => k.code === c.code);
+      if (codeKeys.length === 0) return null;
+      return (
+        <div key={`${color}_${c.code}`}>
+          <div className="px-4 py-2 bg-gray-50 border-b border-gray-100">
+            <div className="text-sm font-medium text-gray-700">{c.name}</div>
+            <div className="font-mono text-xs text-gray-400">{c.code}</div>
+          </div>
+          {codeKeys.map((pk) => renderRow(pk, color))}
+        </div>
+      );
+    };
 
     return (
       <div className="min-h-screen bg-gray-50 pb-20">
@@ -199,49 +197,25 @@ export default function App() {
           </div>
         </div>
         <div className="max-w-lg mx-auto px-4 py-4 space-y-3">
-          {s.codes.map((c) => {
-            const codeKeys = keys.filter((k) => k.code === c.code);
-            return (
-              <div key={c.code} className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-                <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100">
-                  <div className="text-sm font-medium text-gray-700">{c.name}</div>
-                  <div className="font-mono text-xs text-gray-400">{c.code}</div>
-                </div>
-                {codeKeys.map((pk) => {
-                  const photo = photoMap[pk.key];
-                  return (
-                    <div key={pk.key} className="border-b border-gray-100 last:border-0">
-                      <div className="px-4 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                          <span className="text-lg">{pk.icon}</span>
-                          <div>
-                            <div className="text-sm text-gray-700">{pk.label}</div>
-                            <div className="text-xs text-gray-400">{pk.desc}</div>
-                          </div>
-                        </div>
-                        {photo ? (
-                          <div className="flex items-center gap-2">
-                            <span className="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full">완료</span>
-                            <button onClick={() => setUploadTarget(pk)} className="text-xs text-orange-500 font-medium">재촬영</button>
-                          </div>
-                        ) : (
-                          <button onClick={() => setUploadTarget(pk)}
-                            className="bg-orange-500 text-white text-sm font-bold px-4 py-2 rounded-xl active:bg-orange-600 transition">촬영</button>
-                        )}
-                      </div>
-                      {photo && (
-                        <div className="px-4 pb-3">
-                          <img src={photo.url} alt={pk.label} className="w-full h-40 object-cover rounded-xl bg-gray-100" />
-                          {photo.memo && <div className="text-xs text-gray-400 mt-1.5">💬 {photo.memo}</div>}
-                          <div className="text-xs text-gray-300 mt-0.5">{photo.date}</div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+          {/* 도장 */}
+          <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+            <div className="px-4 py-2.5 bg-orange-50 border-b border-orange-100 flex items-center justify-between">
+              <span className="font-bold text-orange-700 text-sm">🔶 도장라인</span>
+              <span className="text-xs text-orange-400">{paintKeys.filter((k) => photoMap[k.key]).length}/{paintKeys.length}</span>
+            </div>
+            {s.codes.map((c) => renderCodeBlock(c, paintKeys, "orange"))}
+          </div>
+
+          {/* 쇼트 (있는 경우만) */}
+          {shotKeys.length > 0 && (
+            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+              <div className="px-4 py-2.5 bg-blue-50 border-b border-blue-100 flex items-center justify-between">
+                <span className="font-bold text-blue-700 text-sm">🔷 쇼트라인 (행거)</span>
+                <span className="text-xs text-blue-400">{shotKeys.filter((k) => photoMap[k.key]).length}/{shotKeys.length}</span>
               </div>
-            );
-          })}
+              {s.codes.filter((c) => c.hasShot).map((c) => renderCodeBlock(c, shotKeys, "blue"))}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -281,7 +255,6 @@ export default function App() {
             const missing = keys.filter((k) => !photoMap[k.key]);
             const missingByCode = {};
             missing.forEach((m) => { if (!missingByCode[m.code]) missingByCode[m.code] = []; missingByCode[m.code].push(m); });
-
             return (
               <div key={s.series} onClick={() => { setSelectedSeries(idx); setView("detail"); }}
                 className={`rounded-2xl border p-3 cursor-pointer active:scale-[0.98] transition ${
@@ -302,7 +275,8 @@ export default function App() {
                           <div key={code} className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-mono text-xs text-gray-400 shrink-0">{code.length > 16 ? code.slice(-10) : code}</span>
                             {items.map((m) => (
-                              <span key={m.key} className="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-100 text-orange-600">
+                              <span key={m.key} className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                m.line === "쇼트" ? "bg-blue-100 text-blue-600" : "bg-orange-100 text-orange-600"}`}>
                                 {m.icon} {m.label}
                               </span>
                             ))}
