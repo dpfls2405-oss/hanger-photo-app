@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { supabase, STORAGE_URL } from "./supabaseClient";
+import { supabase, STORAGE_URL, compressImage } from "./supabaseClient";
 
 export default function App() {
   const [seriesList, setSeriesList] = useState([]);
@@ -63,9 +63,9 @@ export default function App() {
     if (!file || !uploadTarget) return;
     setUploading(true);
     try {
-      const ext = file.name.split(".").pop();
-      const path = `${uploadTarget.code}/${uploadTarget.type}_${Date.now()}.${ext}`;
-      const { error: uploadErr } = await supabase.storage.from("hanger-photos").upload(path, file, { upsert: true });
+      const body = await compressImage(file);
+      const path = `${uploadTarget.code}/${uploadTarget.type}_${Date.now()}.jpg`;
+      const { error: uploadErr } = await supabase.storage.from("hanger-photos").upload(path, body, { upsert: true, contentType: "image/jpeg" });
       if (uploadErr) throw uploadErr;
       const imageUrl = `${STORAGE_URL}/${path}`;
       const { error: dbErr } = await supabase
